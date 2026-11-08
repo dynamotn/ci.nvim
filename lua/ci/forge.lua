@@ -1,0 +1,159 @@
+local M = {}
+
+--- What a forge calls the things ci.nvim has no neutral word for. Prose only:
+--- the `ci://` kind stays `run` whatever the forge calls it.
+---@class ci.Nouns
+---@field run string a collection of jobs
+---@field group string what a job belongs to, shown beside its name
+---@field pr string what it calls a change proposed against a branch
+---@field ref string the sigil it writes before that change's number
+
+---@class ci.Backend
+---@field nouns ci.Nouns
+---@field repo fun(on_done: fun(repo?: string, err?: string))
+---@field rollup fun(expr: string, repo?: string, on_done: fun(res?: ci.gh.Rollup, err?: string))
+---@field pr_for_branch fun(branch: string, repo?: string, on_done: fun(pr?: ci.gh.BranchPr, err?: string))
+---@field pr_by_number fun(number: integer, repo?: string, on_done: fun(pr?: ci.gh.Pr, err?: string))
+---@field job fun(id: integer, repo?: string, on_done: fun(job?: ci.gh.Job, err?: string))
+---@field job_log fun(id: integer, repo?: string, on_done: fun(text?: string, err?: string))
+---@field job_log_from? fun(id: integer, offset: integer, repo?: string, on_done: fun(text?: string, err?: string))
+---@field run_jobs fun(id: integer, attempt?: integer, repo?: string, on_done: fun(jobs?: ci.gh.Job[], err?: string))
+---@field latest_run? fun(file: string, repo?: string, on_done: fun(run?: ci.gh.WorkflowRun, err?: string))
+---@field act? fun(id: integer, what: ci.gh.Act, repo?: string, on_done: fun(err?: string))
+---@field acts? table<ci.gh.Act, boolean> which of the four it takes; all, unsaid
+---@field play? fun(id: integer, repo?: string, on_done: fun(err?: string))
+---@field run_by_index? fun(index: integer, repo?: string, on_done: fun(run?: ci.tea.Run, err?: string))
+---@field run? fun(id: integer, repo?: string, on_done: fun(run?: ci.tea.Run, err?: string))
+---@field finished? fun(text: string): boolean
+---@field prefix? fun(raw: string): string?, string
+---@field marks? fun(body: string): ci.log.Kind?, string?, integer?
+
+M.GITHUB = 'github.com'
+M.GITLAB = 'gitlab.com'
+
+local GIT = 2000
+
+---@param url string
+---@return string? host
+function M.host_of(url)
+  local scheme, authority = url:match('^(%a[%w+.%-]*)://([^/]+)')
+  authority = authority or url:match('^([^/]+):')
+  if not authority then
+    return nil
+  end
+  authority = authority:gsub('^[^@]*@', '')
+  if scheme == 'http' or scheme == 'https' then
+    return authority
+  end
+  return (authority:gsub(':%d+$', ''))
+end
+
+---@param name string
+---@return string? url
+local function remote(name)
+  local r = vim.system({ 'git', 'remote', 'get-url', name }, { text = true }):wait(GIT)
+  if r.code ~= 0 then
+    return nil
+  end
+  local url = vim.trim(r.stdout or '')
+  return url ~= '' and url or nil
+end
+
+--- Which CLI to invoke, and nothing more: both resolve `{owner}`/`{repo}`
+--- themselves. `tea` prefers a remote named `upstream` over `origin`, so the
+--- same order is used here; picking the CLI from one remote while it reads
+--- another is how a fork gets answered for by the wrong repository.
+---@return string host
+function M.host()
+  local url = remote('upstream') or remote('origin')
+  if not url then
+    local r = vim.system({ 'git', 'remote' }, { text = true }):wait(GIT)
+    local first = r.code == 0 and vim.split(vim.trim(r.stdout or ''), '\n')[1] or nil
+    url = first and first ~= '' and remote(first) or nil
+  end
+  return url and M.host_of(url) or M.GITHUB
+end
+
+---@param host? string
+---@return boolean
+function M.is_github(host)
+  host = host or M.GITHUB
+  return host == M.GITHUB or host:match('%.github%.com$') ~= nil
+end
+
+--- gitlab.com by name, and nothing else: a gitlab an organisation hosts itself
+--- cannot be told from a Forgejo by its hostname, and there is nowhere to be
+--- told which it is.
+---@param host? string
+---@return boolean
+function M.is_gitlab(host)
+  return host == M.GITLAB or (host or ''):match('%.gitlab%.com$') ~= nil
+end
+
+--- Anything named neither github nor gitlab is assumed to speak Forgejo. A
+--- host `tea` has no login for fails at the first request, which is a clearer
+--- error than one invented here.
+---@param host? string
+---@return ci.Backend
+function M.of(host)
+  if M.is_github(host) then
+    return require('ci.gh')
+  end
+  return M.is_gitlab(host) and require('ci.glab') or require('ci.tea')
+end
+
+---@param host? string
+---@return string
+function M.cli(host)
+  if M.is_github(host) then
+    return 'gh'
+  end
+  return M.is_gitlab(host) and 'glab' or 'tea'
+end
+
+--- The browser page behind `gX`. The three forges disagree on nearly every
+--- path: `pull` against `pulls` against `merge_requests`, no `/checks` suffix
+--- off github, and a `/-/` between the project and the noun on gitlab, which
+--- is what keeps a subgroup from being mistaken for one.
+---@param host string
+---@param repo string
+---@param kind ci.Uri.Kind|'repo'
+---@param id? string|integer
+---@param attempt? integer
+---@return string
+function M.web(host, repo, kind, id, attempt)
+  local base = ('https://%s/%s'):format(host, repo)
+  if M.is_github(host) then
+    if kind == 'pr' then
+      return ('%s/pull/%s/checks'):format(base, id)
+    elseif kind == 'run' then
+      local u = ('%s/actions/runs/%s'):format(base, id)
+      return attempt and ('%s/attempts/%d'):format(u, attempt) or u
+    elseif kind == 'checks' then
+      return ('%s/commit/%s/checks'):format(base, id)
+    end
+    return base
+  end
+  if M.is_gitlab(host) then
+    if kind == 'pr' then
+      return ('%s/-/merge_requests/%s'):format(base, id)
+    elseif kind == 'run' then
+      return ('%s/-/pipelines/%s'):format(base, id)
+    elseif kind == 'checks' then
+      return ('%s/-/commit/%s'):format(base, id)
+    end
+    return ('%s/-/pipelines'):format(base)
+  end
+  -- A Forgejo run or job page is keyed on the run's index within the
+  -- repository, which cannot be derived from the id its API answers to. Those
+  -- pages name themselves; until one says so, the repository's is the honest
+  -- answer.
+  if kind == 'pr' then
+    return ('%s/pulls/%s'):format(base, id)
+  elseif kind == 'checks' then
+    return ('%s/commit/%s'):format(base, id)
+  end
+  return ('%s/actions'):format(base)
+end
+
+return M

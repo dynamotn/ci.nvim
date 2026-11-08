@@ -1,0 +1,237 @@
+*ci.txt* *ci.nvim.txt*                                          CI for Neovim
+
+Author:  Barrett Ruth <br@barrettruth.com> License: GPL-3.0
+
+==============================================================================
+INTRODUCTION                                                    *ci* *ci.nvim*
+
+GitHub Actions, GitLab CI/CD and Forgejo Actions status and logs for whatever
+you are working on. One command, |:CI|, no configuration.
+
+==============================================================================
+REQUIREMENTS                                                 *ci-requirements*
+
+- Neovim 0.13+
+- `git`
+- `gh`, authenticated (`gh auth login`), for github.com
+- `glab`, authenticated (`glab auth login`), for gitlab.com
+- `tea`, authenticated (`tea login add`), for Forgejo 16+
+
+==============================================================================
+INSTALL                                                           *ci-install*
+
+With |vim.pack|: >lua
+    vim.pack.add({
+      'https://forge.barrettruth.com/barrettruth/ci.nvim',
+    })
+==============================================================================
+COMMAND                                                          *ci-commands*
+
+                                                                         *:CI*
+:CI                     Show checks for the active pull request on the current
+                        branch. Falls back to the branch head if no pull
+                        request is open.
+
+:CI {n}                 Show checks for a pull request by number. A bare
+                        `:CI 123` works on every forge. Optionally, prefix
+                        with `#` on GitHub and Forgejo, `!` on GitLab.
+
+:CI {rev}               Show checks for a git revision. GitHub resolves
+                        expressions against the remote's refs. GitLab accepts
+                        branches, tags and SHAs, resolving `HEAD` locally;
+                        expressions such as `HEAD~3` are not supported there.
+                        Forgejo resolves revisions with local `git rev-parse`.
+                        Non-commits and ranges are rejected.
+
+                        WARNING: an all-digit {rev} is read as a pull or merge
+                        request number. Use `:CI refs/heads/123` for a numeric
+                        branch name. `:CI 123^{commit}` works on GitHub and
+                        Forgejo, but not GitLab.
+
+:CI {url}               Show a forge URL. Recognised on github.com:
+                          .../actions/runs/{run}/job/{job}    a job log
+                          .../actions/runs/{run}              a run
+                          .../actions/runs/{run}/attempts/{n} one attempt
+                          .../runs/{check_run_id}             a job log
+                          .../actions/workflows/{file}        its latest run
+                          .../pull/{n}[/checks]               a pull request
+                          .../commit/{sha}[/checks]           a commit
+                          .../actions                         the repository
+                        A `#step:{n}:{line}` fragment is accepted and ignored.
+
+                        On GitLab:
+                          .../-/pipelines/{id}                a pipeline
+                          .../-/jobs/{id}                     a job log
+                          .../-/merge_requests/{n}            a merge request
+                          .../-/commit/{sha}                  a commit
+                          .../-/pipelines                     the repository
+
+                        On Forgejo:
+                          .../actions/runs/{run}              a run
+                          .../actions/runs/{run}/jobs/{n}     a run
+                          .../pulls/{n}                       a pull request
+                          .../commit/{sha}                    a commit
+                          .../actions                         the repository
+
+:CI ci://...            Reopen a ci.nvim buffer by name. See |ci-buffers|.
+
+:CI .                   Use the |<cWORD>| under the cursor as the argument.
+
+Window modifiers split rather than replace: `:vertical CI`, `:tab CI`,
+`:botright CI`. `:pedit ci://...` works too.
+
+Repository resolution is delegated entirely to the CLI. For `gh` that means
+fork pull requests resolve to the base repository (where checks usually live);
+if it picks the wrong one, fix it with `gh repo set-default`. `tea` has no
+equivalent, so on Forgejo a fork is queried as itself. On GitLab a merge
+request opened from a fork is followed to the fork (where its pipeline runs).
+
+==============================================================================
+BUFFERS                                                           *ci-buffers*
+
+`:edit` reloads CI buffers and `:CI` on the name reopens them: >
+    ci://{host}/{project}/job/{job_id}
+    ci://{host}/{project}/run/{run_id}[/{attempt}]
+    ci://{host}/{project}/pr/{number}
+    ci://{host}/{project}/checks/{oid}
+<
+{project} is `{owner}/{repo}`, or a GitLab path of any depth.
+
+A buffer with anything still running refreshes itself and stops once the
+checks settle, or once no window is showing it. `:e` and `R` refresh on
+demand; the cursor and scroll position are kept. Re-running |:CI| for an open
+buffer does nothing.
+
+A running GitLab job's log is added to as it grows, in bursts tens of seconds
+apart.
+
+A job buffer folds two levels by default: step, then `##[group]`. Forgejo does
+not expose step boundaries, so its logs fold on `##[group]` alone. GitLab has
+no steps either, so its sections take their place. The first failing step is
+opened and the cursor placed on it. Interact with the folds as you would
+regularly; `zM`/`zR` collapses/expands the step list. For example, to disable
+all folds always: >lua
+    vim.api.nvim_create_autocmd('BufWinEnter', {
+      pattern = 'ci://*',
+      callback = function()
+        vim.wo[0][0].foldenable = false
+      end,
+    })
+< Fold options are set on |BufWinEnter|, so a |FileType| autocmd is too early.
+
+Actions logs are (mostly) concealed and transformed rather than deleted. For
+example, every line keeps its timestamp and internal `##[...]` marker which
+are then hidden with |conceal|. Step headers are added for clarity, and
+`##[endgroup]` is dropped, having become the end of a fold.
+
+Show log timestamps (hidden by default) with `gS` or via setting
+`conceallevel` natively. The former is formatted for reading, the latter
+uncovers the concealed prefixes (ISO timestamps, `##[...]` markers). Neither
+is the raw log; for that, see the |:terminal| below.
+
+Escape sequences are the only other bytes removed: SGR ones become highlights,
+the rest have nothing to say in a text buffer. Use the |:terminal| to view the
+log exactly as GitHub stores it: >
+    :term gh api repos/{owner}/{repo}/actions/jobs/{job_id}/logs
+<
+
+==============================================================================
+MAPPINGS                                                         *ci-mappings*
+
+Buffer-local defaults, only set if you have not mapped the |<Plug>| target:
+
+    <CR>    <Plug>(ci-open)        In a checks list, open the check under
+                                   the cursor. A job that triggered another
+                                   run opens that run. Checks that are not
+                                   jobs at all open in a browser.
+    -       <Plug>(ci-up)          Go back to the list you came from.
+    R       <Plug>(ci-refresh)     Reload, same as `:e`.
+    ]]      <Plug>(ci-next-step)   In a job log, go to the next step.
+    [[      <Plug>(ci-prev-step)   In a job log, go to the previous step.
+    gS      <Plug>(ci-timestamps)  In a job log, toggle the timestamps.
+    cr      <Plug>(ci-rerun)       Re-run the run under the cursor: the
+                                   jobs of it that did not pass, or all of
+                                   them if they all did. Confirms first.
+                                   Not on Forgejo.
+    cc      <Plug>(ci-cancel)      Cancel the run under the cursor. Again,
+                                   while it is still cancelling, forces it.
+                                   Confirms first. Not on Forgejo.
+    cp      <Plug>(ci-play)        Start the job under the cursor, where it
+                                   is waiting to be asked for. Confirms
+                                   first. GitLab only.
+    gX      <Plug>(ci-web)         Open the current buffer in a browser.
+    g?      <Plug>(ci-help)        This section.
+
+To rebind, map the |<Plug>| target and the default is skipped: >lua
+    vim.keymap.set('n', '<C-]>', '<Plug>(ci-open)')
+<
+==============================================================================
+HIGHLIGHTS                                                     *ci-highlights*
+
+All groups are links and can be overridden.
+
+    CiPass       ->  DiagnosticOk      ✓  success
+    CiFail       ->  DiagnosticError   ✗  failure, timed out, startup failure
+    CiRunning    ->  DiagnosticWarn    ●  in progress
+    CiPending    ->  Comment           ○  queued, waiting, requested
+    CiSkipped    ->  Comment           ⊘  skipped, neutral, stale, cancelled
+    CiAttention  ->  DiagnosticWarn    !  action required, allowed to fail
+    CiGroup      ->  Title                a `##[group]` or section heading
+    CiCommand    ->  Directory            a `[command]` line
+    CiDebug      ->  Debug                a `##[debug]` line
+    CiUrl        ->  Underlined           a link in the log
+    CiMuted      ->  Comment              secondary columns
+    CiBold       ->  bold                 `Error:` and `Warning:` themselves
+
+Log colours are derived from the ANSI escapes in the log itself and follow
+your terminal palette (`g:terminal_color_0` through `g:terminal_color_15`).
+
+`CiFailBand` and `CiAttentionBand` fill the line behind an `##[error]` or
+`##[warning]`, and behind Forgejo's `::error::` and `::warning::` spellings.
+Their color is `Normal`'s background moved a fifth of the way toward `CiFail`
+or `CiAttention`, recomputed on |ColorScheme|. Without 'termguicolors', or
+where either colour is unset, there is no fill and the line keeps its
+foreground tint.
+
+==============================================================================
+HEALTH                                                             *ci-health*
+
+Checks the Neovim version, the `origin` host, and all three CLIs: >
+    :checkhealth ci
+<
+==============================================================================
+LIMITATIONS                                                   *ci-limitations*
+
+On GitHub, running jobs do not display logs. `gh` has tracked the same
+limitation since 2021: >
+    https://github.com/cli/cli/issues/3484
+<
+Until then a running job shows its steps. Once finished the job automatically
+refreshes to display the newly available logs.
+
+Forgejo's Actions API is younger than GitHub's, so it has quite a few
+behaviors missing:
+
+Firstly, Forgejo will not say where one step of a job ends and the next
+begins. Resultedly, a job log folds on `##[group]` alone. Step folds and step
+headers are GitHub-only.
+
+Re-running and cancelling are unavailable. `cr` and `cc` are unmapped on
+Forgejo.
+
+Forgejo 16.0+ also lacks fetching individual jobs and does not resolve
+revisions remotely. Therefore, `:CI {rev}` only sees what you've fetched.
+Individual jobs cannot be fetched either, meaning job URLs opened directly do
+not show name nor status. Lastly, this also means that older job attemps
+(100+) cannot be fetched.
+
+GitLab jobs have no steps. A log's own sections fold in their place, so `[[`
+and `]]` move between sections, and nothing folds beneath them.
+
+Retrying a GitLab pipeline reaches its failed and canceled jobs - no others.
+
+GitLab does not resolve revisions remotely either, so `:CI {rev}` takes a
+branch, a tag or a SHA, and `:CI HEAD` is answered locally.
+
+==============================================================================
+ vim:tw=78:ts=8:ft=help:norl:
