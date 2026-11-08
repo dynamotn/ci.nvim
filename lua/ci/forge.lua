@@ -48,29 +48,31 @@ function M.host_of(url)
   return (authority:gsub(':%d+$', ''))
 end
 
----@param name string
----@return string? url
-local function remote(name)
-  local r = vim.system({ 'git', 'remote', 'get-url', name }, { text = true }):wait(GIT)
-  if r.code ~= 0 then
-    return nil
-  end
-  local url = vim.trim(r.stdout or '')
-  return url ~= '' and url or nil
-end
+--- The remotes asked in turn for the forge, unless `vim.g.ci_remotes` names
+--- others.
+M.REMOTES = { 'upstream', 'origin' }
 
 --- Which CLI to invoke, and nothing more: both resolve `{owner}`/`{repo}`
 --- themselves. `tea` prefers a remote named `upstream` over `origin`, so the
 --- same order is used here; picking the CLI from one remote while it reads
---- another is how a fork gets answered for by the wrong repository.
+--- another is how a fork gets answered for by the wrong repository. With none
+--- of them, the first remote git lists speaks for the repository.
 ---@return string host
 function M.host()
-  local url = remote('upstream') or remote('origin')
-  if not url then
-    local r = vim.system({ 'git', 'remote' }, { text = true }):wait(GIT)
-    local first = r.code == 0 and vim.split(vim.trim(r.stdout or ''), '\n')[1] or nil
-    url = first and first ~= '' and remote(first) or nil
+  -- Every remote in one call, with `insteadOf` applied: `:CI` waits on it
+  local r = vim.system({ 'git', 'remote', '-v' }, { text = true }):wait(GIT)
+  local urls, first = {}, nil
+  if r.code == 0 then
+    for name, url in (r.stdout or ''):gmatch('(%S+)%s+(%S+) %(fetch%)') do
+      urls[name] = url
+      first = first or url
+    end
   end
+  local url
+  for _, name in ipairs(vim.g.ci_remotes or M.REMOTES) do
+    url = url or urls[name]
+  end
+  url = url or first
   return url and M.host_of(url) or M.GITHUB
 end
 

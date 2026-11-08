@@ -22,8 +22,19 @@ INSTALL                                                           *ci-install*
 
 With |vim.pack|: >lua
     vim.pack.add({
-      'https://forge.barrettruth.com/barrettruth/ci.nvim',
+      'https://github.com/dynamotn/ci.nvim',
     })
+==============================================================================
+OPTIONS                                                           *ci-options*
+
+                                                                *g:ci_remotes*
+g:ci_remotes            List of remote names asked in turn for the forge of
+                        the repository. Default: `{ 'upstream', 'origin' }`.
+                        With none of them, the first remote git lists is
+                        used. For GitHub on a remote named `gh` while
+                        `origin` is on GitLab: >lua
+                            vim.g.ci_remotes = { 'upstream', 'gh', 'origin' }
+<
 ==============================================================================
 COMMAND                                                          *ci-commands*
 

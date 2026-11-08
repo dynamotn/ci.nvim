@@ -1,7 +1,7 @@
 # Contributing
 
 Development, issues, and pull requests happen on
-[Forgejo](https://forge.barrettruth.com/barrettruth/ci.nvim).
+[GitHub](https://github.com/dynamotn/ci.nvim).
 
 ## Scope
 

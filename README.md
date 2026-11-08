@@ -2,7 +2,8 @@
 
 **GitHub Actions, GitLab CI/CD and Forgejo Actions in Neovim**
 
-![ci.nvim](https://forge.barrettruth.com/attachments/cd65d168-cc7b-413a-bcce-219d128c5297)
+A fork of Barrett Ruth's ci.nvim, whose repository is no longer public.
+It adds `g:ci_remotes`, to choose the remote that names the forge.
 
 Experience the power of `:CI`. Native CI logs in normal Neovim buffers with
 real ANSI colours, step-level folds, and more.
@@ -22,7 +23,7 @@ With `vim.pack`:
 
 ```lua
 vim.pack.add({
-  'https://forge.barrettruth.com/barrettruth/ci.nvim',
+  'https://github.com/dynamotn/ci.nvim',
 })
 ```
 
