@@ -5,8 +5,9 @@ Author:  Barrett Ruth <br@barrettruth.com> License: GPL-3.0
 ==============================================================================
 INTRODUCTION                                                    *ci* *ci.nvim*
 
-GitHub Actions, GitLab CI/CD and Forgejo Actions status and logs for whatever
-you are working on. One command, |:CI|, no configuration.
+GitHub Actions, GitLab CI/CD, Forgejo and Gitea Actions, and Azure Pipelines
+status and logs for whatever you are working on. One command, |:CI|, no
+configuration.
 
 ==============================================================================
 REQUIREMENTS                                                 *ci-requirements*
@@ -14,8 +15,11 @@ REQUIREMENTS                                                 *ci-requirements*
 - Neovim 0.13+
 - `git`
 - `gh`, authenticated (`gh auth login`), for github.com
-- `glab`, authenticated (`glab auth login`), for gitlab.com
-- `tea`, authenticated (`tea login add`), for Forgejo 16+
+- `glab`, authenticated (`glab auth login`), for gitlab.com and a GitLab
+  hosted elsewhere
+- `tea`, authenticated (`tea login add`), for Forgejo 16+ and Gitea
+- `az` with the `azure-devops` extension, signed in with `az login` or
+  `AZURE_DEVOPS_EXT_PAT`, for Azure DevOps
 
 ==============================================================================
 INSTALL                                                           *ci-install*
@@ -35,6 +39,16 @@ g:ci_remotes            List of remote names asked in turn for the forge of
                         `origin` is on GitLab: >lua
                             vim.g.ci_remotes = { 'upstream', 'gh', 'origin' }
 <
+                                                                 *g:ci_forges*
+g:ci_forges             Table of host names to the forge they run, for a host
+                        whose name does not say: `'gitlab'`, `'forgejo'` or
+                        `'azure'`. A host is otherwise known by its name: a
+                        GitLab hosted elsewhere by a `gitlab` label of its own
+                        (`gitlab.example.com`), and anything unknown is taken
+                        for Forgejo. >lua
+                            vim.g.ci_forges = { ['git.acme.dev'] = 'gitlab' }
+<                       GitHub Enterprise cannot be named: `gh` would still
+                        ask github.com.
 ==============================================================================
 COMMAND                                                          *ci-commands*
 
@@ -45,19 +59,19 @@ COMMAND                                                          *ci-commands*
 
 :CI {n}                 Show checks for a pull request by number. A bare
                         `:CI 123` works on every forge. Optionally, prefix
-                        with `#` on GitHub and Forgejo, `!` on GitLab.
+                        with `#` on GitHub and Forgejo, `!` on GitLab and
+                        Azure DevOps.
 
 :CI {rev}               Show checks for a git revision. GitHub resolves
-                        expressions against the remote's refs. GitLab accepts
-                        branches, tags and SHAs, resolving `HEAD` locally;
-                        expressions such as `HEAD~3` are not supported there.
-                        Forgejo resolves revisions with local `git rev-parse`.
+                        expressions against the remote's refs. Elsewhere a
+                        branch or a tag is asked of the forge by name, so it
+                        need not be fetched, and `HEAD` or an expression such
+                        as `HEAD~3` is resolved with local `git rev-parse`.
                         Non-commits and ranges are rejected.
 
                         WARNING: an all-digit {rev} is read as a pull or merge
                         request number. Use `:CI refs/heads/123` for a numeric
-                        branch name. `:CI 123^{commit}` works on GitHub and
-                        Forgejo, but not GitLab.
+                        branch name. `:CI 123^{commit}` asks for the commit.
 
 :CI {url}               Show a forge URL. Recognised on github.com:
                           .../actions/runs/{run}/job/{job}    a job log
@@ -84,6 +98,13 @@ COMMAND                                                          *ci-commands*
                           .../commit/{sha}                    a commit
                           .../actions                         the repository
 
+                        On Azure DevOps, `dev.azure.com/{org}/{project}` or
+                        `{org}.visualstudio.com/{project}`:
+                          .../_build/results?buildId={id}     a run
+                          .../_git/{repo}/pullrequest/{n}     a pull request
+                          .../_git/{repo}/commit/{sha}        a commit
+                          .../_git/{repo}                     the repository
+
 :CI ci://...            Reopen a ci.nvim buffer by name. See |ci-buffers|.
 
 :CI .                   Use the |<cWORD>| under the cursor as the argument.
@@ -106,7 +127,10 @@ BUFFERS                                                           *ci-buffers*
     ci://{host}/{project}/pr/{number}
     ci://{host}/{project}/checks/{oid}
 <
-{project} is `{owner}/{repo}`, or a GitLab path of any depth.
+{project} is `{owner}/{repo}`, a GitLab path of any depth, or
+`{org}/{project}/{repo}` on Azure DevOps, where a run is named by
+`{org}/{project}` alone. An Azure DevOps job's id is its build's times 100000
+plus its log's.
 
 A buffer with anything still running refreshes itself and stops once the
 checks settle, or once no window is showing it. `:e` and `R` refresh on
@@ -116,9 +140,10 @@ buffer does nothing.
 A running GitLab job's log is added to as it grows, in bursts tens of seconds
 apart.
 
-A job buffer folds two levels by default: step, then `##[group]`. Forgejo does
-not expose step boundaries, so its logs fold on `##[group]` alone. GitLab has
-no steps either, so its sections take their place. The first failing step is
+A job buffer folds two levels by default: step, then `##[group]`. Azure
+DevOps steps are a job's tasks. Forgejo does not expose step boundaries, so
+its logs fold on `##[group]` alone. GitLab has no steps either, so its
+sections take their place. The first failing step is
 opened and the cursor placed on it. Interact with the folds as you would
 regularly; `zM`/`zR` collapses/expands the step list. For example, to disable
 all folds always: >lua
@@ -163,10 +188,14 @@ Buffer-local defaults, only set if you have not mapped the |<Plug>| target:
     cr      <Plug>(ci-rerun)       Re-run the run under the cursor: the
                                    jobs of it that did not pass, or all of
                                    them if they all did. Confirms first.
-                                   Not on Forgejo.
+                                   GitLab re-runs all of them job by job;
+                                   Azure DevOps queues a new build of the
+                                   same commit. Forgejo 17 and Gitea 1.26
+                                   take it, older releases do not.
     cc      <Plug>(ci-cancel)      Cancel the run under the cursor. Again,
                                    while it is still cancelling, forces it.
-                                   Confirms first. Not on Forgejo.
+                                   Confirms first. Forcing is GitHub only;
+                                   Forgejo cancels from 16 on.
     cp      <Plug>(ci-play)        Start the job under the cursor, where it
                                    is waiting to be asked for. Confirms
                                    first. GitLab only.
@@ -207,42 +236,36 @@ foreground tint.
 ==============================================================================
 HEALTH                                                             *ci-health*
 
-Checks the Neovim version, the `origin` host, and all three CLIs: >
+Checks the Neovim version, the remote's host and the forge it is taken for,
+and all four CLIs: >
     :checkhealth ci
 <
 ==============================================================================
 LIMITATIONS                                                   *ci-limitations*
 
+What is left is what the forges' APIs do not offer.
+
 On GitHub, running jobs do not display logs. `gh` has tracked the same
-limitation since 2021: >
+limitation since 2021, and no public API serves a log before its job ends: >
     https://github.com/cli/cli/issues/3484
 <
 Until then a running job shows its steps. Once finished the job automatically
 refreshes to display the newly available logs.
 
-Forgejo's Actions API is younger than GitHub's, so it has quite a few
-behaviors missing:
-
-Firstly, Forgejo will not say where one step of a job ends and the next
-begins. Resultedly, a job log folds on `##[group]` alone. Step folds and step
-headers are GitHub-only.
-
-Re-running and cancelling are unavailable. `cr` and `cc` are unmapped on
-Forgejo.
-
-Forgejo 16.0+ also lacks fetching individual jobs and does not resolve
-revisions remotely. Therefore, `:CI {rev}` only sees what you've fetched.
-Individual jobs cannot be fetched either, meaning job URLs opened directly do
-not show name nor status. Lastly, this also means that older job attemps
-(100+) cannot be fetched.
+Forgejo and Gitea will not say where one step of a job ends and the next
+begins, so a job log folds on `##[group]` alone; step folds and step headers
+are not offered there. Nor do they serve a single job by id, so a job URL
+opened directly shows no name or status, and an attempt older than the last
+100 runs cannot be found.
 
 GitLab jobs have no steps. A log's own sections fold in their place, so `[[`
-and `]]` move between sections, and nothing folds beneath them.
+and `]]` move between sections, and nothing folds beneath them. Re-running a
+whole pipeline retries its jobs one by one; a child pipeline is retried only
+through the job that triggers it.
 
-Retrying a GitLab pipeline reaches its failed and canceled jobs - no others.
-
-GitLab does not resolve revisions remotely either, so `:CI {rev}` takes a
-branch, a tag or a SHA, and `:CI HEAD` is answered locally.
+Azure DevOps files builds by branch, never by commit, so a commit's checks
+are found among the newest 100 builds of its project. A job's browser page is
+its build's. Re-running everything queues a new build, with an id of its own.
 
 ==============================================================================
  vim:tw=78:ts=8:ft=help:norl:

@@ -193,6 +193,53 @@ local function parse_gitlab(url, host)
   return nil, ('unsupported GitLab URL: %s'):format(url)
 end
 
+--- Azure DevOps names a pipeline run by build id under the project, with no
+--- repository in its URL, so a run is named `org/project` alone. An
+--- `{org}.visualstudio.com` URL carries the organization in its host and is
+--- read as the `dev.azure.com` one it redirects to.
+---@param url string
+---@param host string
+---@return ci.Target?
+---@return string? err
+local function parse_azure(url, host)
+  local path, query = split_url(url)
+  if not path then
+    return nil
+  end
+  local org = host:match('^([%w-]+)%.visualstudio%.com$')
+  if not org then
+    org, path = path:match('^([^/]+)/(.*)$')
+  end
+  local project, rest = (path or ''):match('^([^/]+)/(.*)$')
+  if not org or not project then
+    return nil, ('unsupported Azure DevOps URL: %s'):format(url)
+  end
+  host = 'dev.azure.com'
+
+  local build = rest == '_build/results' and query and query:match('buildId=(%d+)')
+  if build then
+    return { kind = 'run', host = host, repo = org .. '/' .. project, id = tonumber(build) }
+  end
+
+  local name, tail = rest:match('^_git/([^/]+)/?(.*)$')
+  if name then
+    local repo = ('%s/%s/%s'):format(org, project, name)
+    local pr = tail:match('^pullrequest/(%d+)$')
+    if pr then
+      return { kind = 'pr', host = host, repo = repo, number = tonumber(pr) }
+    end
+    local sha = tail:match('^commit/(%x+)$')
+    if sha then
+      return { kind = 'rev', host = host, repo = repo, expr = sha }
+    end
+    if tail == '' then
+      return { kind = 'repo', host = host, repo = repo }
+    end
+  end
+
+  return nil, ('unsupported Azure DevOps URL: %s'):format(url)
+end
+
 ---@param arg? string
 ---@return ci.Target?
 ---@return string? err
@@ -206,12 +253,15 @@ function M.parse(arg)
     if not host then
       return nil, ('not a forge URL: %s'):format(arg)
     end
-    local forge = require('ci.forge')
-    if forge.is_github(host) then
+    local kind = require('ci.forge').kind(host)
+    if kind == 'github' then
       return parse_github(arg)
     end
-    if forge.is_gitlab(host) then
+    if kind == 'gitlab' then
       return parse_gitlab(arg, host)
+    end
+    if kind == 'azure' then
+      return parse_azure(arg, host)
     end
     return parse_forgejo(arg, host)
   end

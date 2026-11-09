@@ -23,8 +23,9 @@ function M.check()
     vim.health.error('ci.nvim requires Neovim 0.13.0+')
   end
 
-  local host = require('ci.forge').host()
-  vim.health.info(('origin points at %s'):format(host))
+  local forge = require('ci.forge')
+  local host = forge.host()
+  vim.health.info(('the remote points at %s, asked as %s'):format(host, forge.kind(host)))
 
   if vim.fn.executable('gh') == 1 then
     local ok = probe('gh', { 'gh', 'auth', 'status' })
@@ -61,7 +62,24 @@ function M.check()
     end
   else
     vim.health.warn('tea not found on $PATH', {
-      'Needed for Forgejo: https://gitea.com/gitea/tea',
+      'Needed for Forgejo and Gitea: https://gitea.com/gitea/tea',
+    })
+  end
+
+  -- `az devops` signs in through `az login` or `AZURE_DEVOPS_EXT_PAT`, and
+  -- neither can be asked about without a request to an organization.
+  if vim.fn.executable('az') == 1 then
+    local ok = probe('az', { 'az', 'extension', 'show', '--name', 'azure-devops' })
+    if ok then
+      vim.health.ok('az found with the azure-devops extension')
+    elseif ok == false then
+      vim.health.warn('az has no azure-devops extension', {
+        'Run: az extension add --name azure-devops',
+      })
+    end
+  else
+    vim.health.warn('az not found on $PATH', {
+      'Needed for Azure DevOps: https://learn.microsoft.com/cli/azure/install-azure-cli',
     })
   end
 end

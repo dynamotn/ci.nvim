@@ -173,11 +173,35 @@ describe('forge.host', function()
     assert.is_false(forge.is_github('notgithub.com'))
   end)
 
-  it('knows gitlab only by name', function()
+  it('knows gitlab by a gitlab label in its name', function()
     assert.is_true(forge.is_gitlab('gitlab.com'))
     assert.is_true(forge.is_gitlab('team.gitlab.com'))
+    assert.is_true(forge.is_gitlab('gitlab.example.com'))
     assert.is_false(forge.is_gitlab('notgitlab.com'))
-    assert.is_false(forge.is_gitlab('gitlab.example.com'))
     assert.is_false(forge.is_gitlab(nil))
+  end)
+end)
+
+describe('target.parse on Azure DevOps', function()
+  it('reads a build, a pull request and a commit', function()
+    assert.same(
+      { kind = 'run', host = 'dev.azure.com', repo = 'acme/Shop', id = 7 },
+      target.parse('https://dev.azure.com/acme/Shop/_build/results?buildId=7&view=logs')
+    )
+    assert.same(
+      { kind = 'pr', host = 'dev.azure.com', repo = 'acme/Shop/web', number = 3 },
+      target.parse('https://dev.azure.com/acme/Shop/_git/web/pullrequest/3')
+    )
+    assert.same(
+      { kind = 'rev', host = 'dev.azure.com', repo = 'acme/Shop/web', expr = 'abc123' },
+      target.parse('https://dev.azure.com/acme/Shop/_git/web/commit/abc123')
+    )
+  end)
+
+  it('reads the organization from a visualstudio.com host', function()
+    assert.same(
+      { kind = 'run', host = 'dev.azure.com', repo = 'acme/Shop', id = 7 },
+      target.parse('https://acme.visualstudio.com/Shop/_build/results?buildId=7')
+    )
   end)
 end)

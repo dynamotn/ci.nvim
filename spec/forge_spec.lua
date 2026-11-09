@@ -47,3 +47,32 @@ describe('forge.host', function()
     assert.equals('gitlab.com', forge.host())
   end)
 end)
+
+describe('forge.kind', function()
+  after_each(function()
+    vim.g.ci_forges = nil
+  end)
+
+  it('knows a forge by its name', function()
+    assert.equals('github', forge.kind('github.com'))
+    assert.equals('gitlab', forge.kind('gitlab.com'))
+    assert.equals('azure', forge.kind('dev.azure.com'))
+    assert.equals('azure', forge.kind('ssh.dev.azure.com'))
+    assert.equals('azure', forge.kind('acme.visualstudio.com'))
+    assert.equals('forgejo', forge.kind('codeberg.org'))
+  end)
+
+  it('takes a host with a gitlab label of its own for a gitlab', function()
+    assert.equals('gitlab', forge.kind('gitlab.example.com'))
+    assert.equals('gitlab', forge.kind('git.gitlab.example.com'))
+    assert.equals('forgejo', forge.kind('notgitlab.example.com'))
+  end)
+
+  it('lets vim.g.ci_forges say what a host is', function()
+    vim.g.ci_forges = { ['git.example.com'] = 'gitlab', ['code.example.com'] = 'github' }
+    assert.equals('gitlab', forge.kind('git.example.com'))
+    assert.equals('glab', forge.cli('git.example.com'))
+    -- gh would still ask github.com, so github is not something to be told
+    assert.equals('forgejo', forge.kind('code.example.com'))
+  end)
+end)
