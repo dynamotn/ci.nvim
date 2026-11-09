@@ -260,30 +260,67 @@ local function statuses_for_sha(sha, repo, on_done)
   end)
 end
 
+--- The commit {expr} names. Forgejo parses no revision expressions, so HEAD
+--- and `HEAD~3` are answered by git; a branch or a tag is asked of Forgejo by
+--- name first, which sees one not fetched yet and where the remote's is now.
+---@param expr string
+---@param repo string
+---@param on_done fun(sha?: string, err?: string)
+local function resolve_rev(expr, repo, on_done)
+  local rev = (expr:gsub('%^{commit}$', ''))
+  if rev:match('^%x%x%x%x%x%x%x+$') then
+    return on_done(rev)
+  end
+  local function locally()
+    local sha = rev_parse(rev .. '^{commit}')
+    if not sha then
+      return on_done(nil, ('no such revision on %s or here: %s'):format(repo, rev))
+    end
+    on_done(sha)
+  end
+  if rev == 'HEAD' or rev:find('[~^@:]') then
+    return locally()
+  end
+  api(('repos/%s/branches/%s'):format(repo, rev), function(branch)
+    local sha = vim.tbl_get(branch or {}, 'commit', 'id')
+    if sha then
+      return on_done(sha)
+    end
+    api(('repos/%s/tags/%s'):format(repo, rev), function(tag)
+      sha = vim.tbl_get(tag or {}, 'commit', 'sha')
+      if sha then
+        return on_done(sha)
+      end
+      locally()
+    end)
+  end)
+end
+
 --- Actions runs and legacy commit statuses are separate on Forgejo, so the two
 --- are fetched and concatenated into the list GitHub returns as one rollup.
 ---@param expr string
 ---@param repo? string
 ---@param on_done fun(res?: ci.gh.Rollup, err?: string)
 function M.rollup(expr, repo, on_done)
-  local sha = expr:match('^%x%x%x%x%x%x%x+$') or rev_parse(expr)
-  if not sha then
-    return on_done(nil, ('cannot resolve revision locally: %s'):format(expr))
-  end
   resolve_repo(repo, function(full, rerr)
     if not full then
       return on_done(nil, rerr)
     end
-    checks_for_sha(sha, full, function(checks, headline)
-      statuses_for_sha(sha, full, function(extra)
-        vim.list_extend(checks, extra)
-        on_done({
-          repo = full,
-          oid = sha,
-          headline = headline or '',
-          state = nil,
-          checks = checks,
-        })
+    resolve_rev(expr, full, function(sha, serr)
+      if not sha then
+        return on_done(nil, serr)
+      end
+      checks_for_sha(sha, full, function(checks, headline)
+        statuses_for_sha(sha, full, function(extra)
+          vim.list_extend(checks, extra)
+          on_done({
+            repo = full,
+            oid = sha,
+            headline = headline or '',
+            state = nil,
+            checks = checks,
+          })
+        end)
       end)
     end)
   end)
@@ -415,6 +452,108 @@ function M.run_by_index(index, repo, on_done)
       end
     end
     on_done(nil, ('run %d is not among the last %d%s'):format(index, RUN_SCAN, where(repo)))
+  end)
+end
+
+--- Cancelling came in Forgejo 16, re-running a run or one job in Forgejo 17
+--- and Gitea 1.26; neither forces a cancel already under way.
+---@type table<ci.gh.Act, boolean>
+M.acts = { rerun = true, ['rerun-failed-jobs'] = true, cancel = true }
+
+--- How a job that did not pass reads in a Forgejo job list.
+local FAILED = { failure = true, cancelled = true }
+
+--- What a server too old for {what} answers, said as much.
+---@param err string
+---@param what string
+---@param since string the releases that can
+---@return string
+local function too_old(err, what, since)
+  if err:match('404') or err:match('405') or err:lower():match('not found') then
+    return ('this server cannot %s from its API (%s can): %s'):format(what, since, err)
+  end
+  return err
+end
+
+local RERUN_SINCE = 'Forgejo 17 or Gitea 1.26'
+
+---@param path string
+---@param on_done fun(err?: string)
+local function post(path, on_done)
+  local opts = { text = true, timeout = API }
+  return vim.system({ 'tea', 'api', '--method', 'POST', path }, opts, function(r)
+    vim.schedule(function()
+      if r.code == 124 then
+        return on_done(('tea did not answer within %ds'):format(API / 1000))
+      end
+      if r.code ~= 0 then
+        return on_done(errmsg(r))
+      end
+      local body = vim.trim(r.stdout or '')
+      local ok, decoded = pcall(vim.json.decode, body)
+      on_done(ok and envelope_error(decoded) or nil)
+    end)
+  end)
+end
+
+--- Re-runs the jobs of run {id} that did not pass, one after another: Forgejo
+--- re-runs a whole run or a single job, and nothing in between.
+---@param id integer
+---@param repo? string
+---@param on_done fun(err?: string)
+local function rerun_failed(id, repo, on_done)
+  M.run_jobs(id, nil, repo, function(jobs, err)
+    if err then
+      return on_done(err)
+    end
+    local ids = {}
+    for _, j in ipairs(jobs or {}) do
+      if FAILED[j.status] or FAILED[j.conclusion] then
+        ids[#ids + 1] = j.id
+      end
+    end
+    if #ids == 0 then
+      return on_done(('nothing in run %d failed'):format(id))
+    end
+    local i = 0
+    local function next_job()
+      i = i + 1
+      if i > #ids then
+        return on_done()
+      end
+      post(('repos/%s/actions/jobs/%d/rerun'):format(slug(repo), ids[i]), function(e)
+        if e then
+          return on_done(too_old(e, 're-run a job', RERUN_SINCE))
+        end
+        next_job()
+      end)
+    end
+    next_job()
+  end)
+end
+
+---@param id integer
+---@param what ci.gh.Act
+---@param repo? string
+---@param on_done fun(err?: string)
+function M.act(id, what, repo, on_done)
+  if what == 'rerun-failed-jobs' then
+    return rerun_failed(id, repo, on_done)
+  end
+  local cancel = what == 'cancel' or what == 'force-cancel'
+  local path = ('repos/%s/actions/runs/%d/%s'):format(
+    slug(repo),
+    id,
+    cancel and 'cancel' or 'rerun'
+  )
+  post(path, function(err)
+    if not err then
+      return on_done()
+    end
+    if cancel then
+      return on_done(too_old(err, 'cancel a run', 'Forgejo 16'))
+    end
+    on_done(too_old(err, 're-run a run', RERUN_SINCE))
   end)
 end
 

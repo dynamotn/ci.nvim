@@ -8,11 +8,13 @@ local LOG = 30000
 ---@type ci.Nouns
 M.nouns = { run = 'pipeline', group = 'stage', pr = 'merge request', ref = '!' }
 
---- Retrying reaches the failed and canceled jobs and no others, and a cancel
---- already under way cannot be hurried, so neither of the other two would do
---- anything but report that it had.
+--- A cancel already under way cannot be hurried, so force-cancel would do
+--- nothing but report that it had.
 ---@type table<ci.gh.Act, boolean>
-M.acts = { ['rerun-failed-jobs'] = true, cancel = true }
+M.acts = { rerun = true, ['rerun-failed-jobs'] = true, cancel = true }
+
+--- The states a job can be retried from.
+local ENDED = { success = true, failed = true, canceled = true }
 
 --- A stamped log line is a timestamp, two hex flags, the stream it came from,
 --- and a space, or a plus where the line continues one already begun.
@@ -220,16 +222,19 @@ function M.repo(on_done)
   return resolve(nil, on_done)
 end
 
---- gitlab resolves a branch, a tag or a sha, and no other revision, so HEAD is
---- answered here before it is asked for.
+--- gitlab resolves a branch, a tag or a sha, and no other revision. A name is
+--- left to gitlab, which knows where the remote's branch is now; HEAD and an
+--- expression like `HEAD~3` or `main^` are answered by git here first.
 ---@param expr string
 ---@return string
-local function revision(expr)
+function M.revision(expr)
   local rev = (expr:gsub('%^{commit}$', ''))
-  if rev ~= 'HEAD' then
+  if rev ~= 'HEAD' and not rev:find('[~^@:]') then
     return rev
   end
-  local r = vim.system({ 'git', 'rev-parse', 'HEAD' }, { text = true }):wait(GIT)
+  local r = vim
+    .system({ 'git', 'rev-parse', '--verify', '--quiet', rev .. '^{commit}' }, { text = true })
+    :wait(GIT)
   local sha = r.code == 0 and vim.trim(r.stdout or '') or ''
   return sha ~= '' and sha or rev
 end
@@ -295,7 +300,7 @@ function M.rollup(expr, repo, on_done)
       return on_done(nil, err)
     end
     local p = project(path)
-    api(('projects/%s/repository/commits/%s'):format(p, enc(revision(expr))), function(commit, e)
+    api(('projects/%s/repository/commits/%s'):format(p, enc(M.revision(expr))), function(commit, e)
       if e then
         return on_done(nil, e)
       end
@@ -520,14 +525,58 @@ function M.play(id, repo, on_done)
   end)
 end
 
+--- Retries every job of pipeline {id} that has ended, one after another in
+--- the order they were created, so the stages come back in the order they
+--- ran. The pipeline's own retry reaches only the failed and canceled ones,
+--- and does nothing at all where every job passed.
+---@param id integer
+---@param repo? string
+---@param on_done fun(err?: string)
+local function retry_all(id, repo, on_done)
+  local p = project(repo)
+  list(('projects/%s/pipelines/%d/jobs?per_page=100'):format(p, id), function(rows, err)
+    if err then
+      return on_done(err)
+    end
+    local ids = {}
+    for _, j in ipairs(rows or {}) do
+      if ENDED[j.status] then
+        ids[#ids + 1] = j.id
+      end
+    end
+    if #ids == 0 then
+      return on_done(('no job of pipeline %d has ended yet'):format(id))
+    end
+    table.sort(ids)
+    local i = 0
+    local function next_job()
+      i = i + 1
+      if i > #ids then
+        return on_done()
+      end
+      local at = ('projects/%s/jobs/%d/retry'):format(p, ids[i])
+      run({ 'api', '--method', 'POST', at }, function(_, e)
+        if e then
+          return on_done(('retried %d of %d jobs, then: %s'):format(i - 1, #ids, e))
+        end
+        next_job()
+      end)
+    end
+    next_job()
+  end)
+end
+
 --- gitlab retries the failed and canceled jobs of a pipeline and nothing else,
---- and has no effect at all where there are none. Cancelling answers 200
---- whatever state the pipeline is in, so a second ask cannot force it.
+--- so re-running all of it goes job by job. Cancelling answers 200 whatever
+--- state the pipeline is in, so a second ask cannot force it.
 ---@param id integer
 ---@param what ci.gh.Act
 ---@param repo? string
 ---@param on_done fun(err?: string)
 function M.act(id, what, repo, on_done)
+  if what == 'rerun' then
+    return retry_all(id, repo, on_done)
+  end
   local verb = (what == 'cancel' or what == 'force-cancel') and 'cancel' or 'retry'
   local at = ('projects/%s/pipelines/%d/%s'):format(project(repo), id, verb)
   return run({ 'api', '--method', 'POST', at }, function(_, err)
